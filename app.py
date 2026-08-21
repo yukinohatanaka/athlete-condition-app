@@ -36,8 +36,11 @@ def load_data():
         sheet = client.open("athlete_condition_db").worksheet("コンディションデータ")
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
+        
         if not df.empty and "日付" in df.columns:
-            df["日付"] = pd.to_datetime(df["日付"])
+            # 不正な文字列が入っていてもエラーで止まらないよう安全に日付変換
+            df["日付"] = pd.to_datetime(df["日付"], errors='coerce')
+            df = df.dropna(subset=["日付"])
         return df
     except Exception as e:
         st.error(f"データ取得エラー: {e}")
@@ -71,9 +74,8 @@ def save_data(data_dict):
 st.title("🏃 アスリート コンディション分析")
 st.caption("日々のコンディションを記録し、好調時の再現条件を分析します。")
 
-# 選手選択（共通セレクト）
-athlete_list = ["選手A", "選手B", "選手C", "選手D", "選手E"] # 運用に合わせて変更可能
-selected_athlete = st.selectbox("👤 選手名を選択してください", athlete_list)
+# 選手名入力欄（自由テキスト入力に変更）
+input_athlete_name = st.text_input("👤 選手名を入力してください（例: ヤマダ タロウ）", value="").strip()
 
 tab1, tab2 = st.tabs(["📝 今日の記録（入力）", "📊 個人分析（ダッシュボード）"])
 
@@ -81,7 +83,8 @@ tab1, tab2 = st.tabs(["📝 今日の記録（入力）", "📊 個人分析（�
 # TAB 1: 入力フォーム
 # ==========================================
 with tab1:
-    st.subheader(f"{selected_athlete} さんのコンディション入力")
+    display_name = input_athlete_name if input_athlete_name else "（未入力）"
+    st.subheader(f"{display_name} さんのコンディション入力")
 
     with st.form("condition_form", clear_on_submit=True):
         input_date = st.date_input("日付", datetime.today())
@@ -104,107 +107,113 @@ with tab1:
         submitted = st.form_submit_button("データ送信・保存", use_container_width=True)
 
         if submitted:
-            record = {
-                "日付": input_date,
-                "選手名": selected_athlete,
-                "天気": weather,
-                "睡眠時間": sleep,
-                "体の自覚的疲労度": fatigue,
-                "プレッシャー・不安度": pressure,
-                "今日のモチベーション": motivation,
-                "前日の練習負担度": prev_load,
-                "人間関係": relation,
-                "自由時間の量": free_time,
-                "自覚的な体の動きやすさ": movement
-            }
-            if save_data(record):
-                st.success("データがクラウド上へ正常に保存されました！")
+            if not input_athlete_name:
+                st.error("⚠️ 画面上の『選手名を入力してください』の欄に名前を入力してから送信してください。")
+            else:
+                record = {
+                    "日付": input_date,
+                    "選手名": input_athlete_name,
+                    "天気": weather,
+                    "睡眠時間": sleep,
+                    "体の自覚的疲労度": fatigue,
+                    "プレッシャー・不安度": pressure,
+                    "今日のモチベーション": motivation,
+                    "前日の練習負担度": prev_load,
+                    "人間関係": relation,
+                    "自由時間の量": free_time,
+                    "自覚的な体の動きやすさ": movement
+                }
+                if save_data(record):
+                    st.success(f"{input_athlete_name} さんのデータが正常に保存されました！")
 
 # ==========================================
 # TAB 2: 分析ダッシュボード
 # ==========================================
 with tab2:
-    st.subheader(f"{selected_athlete} さんの分析結果")
-    all_df = load_data()
-
-    if all_df.empty or "選手名" not in all_df.columns:
-        st.info("データがありません。")
+    if not input_athlete_name:
+        st.info("👆 上部の『選手名を入力してください』の欄に名前を入力すると、個人分析が表示されます。")
     else:
-        # 選択した選手のみに絞り込み
-        df = all_df[all_df["選手名"] == selected_athlete].copy()
+        st.subheader(f"{input_athlete_name} さんの分析結果")
+        all_df = load_data()
 
-        if len(df) < 3:
-            st.info("※ 個人データが不足しています。まずは3日以上入力してください。")
+        if all_df.empty or "選手名" not in all_df.columns:
+            st.info("データがありません。")
         else:
-            high_move = df[df["自覚的な体の動きやすさ"] >= 7]
-            low_move = df[df["自覚的な体の動きやすさ"] <= 4]
-            high_moti = df[df["今日のモチベーション"] >= 7]
+            # 入力された選手名でフィルタリング（完全一致）
+            df = all_df[all_df["選手名"] == input_athlete_name].copy()
 
-            st.markdown("### 💡 自動生成インサイト")
-            insights = []
-
-            if not high_move.empty:
-                avg_sleep_high = high_move["睡眠時間"].mean()
-                avg_prev_load_high = high_move["前日の練習負担度"].mean()
-                insights.append(f"・**体が動きやすい日（7以上）**は、睡眠時間が平均 **{avg_sleep_high:.1f}時間**、前日の練習負担度が平均 **{avg_prev_load_high:.1f}** の傾向があります。")
-
-            if not high_moti.empty:
-                avg_rel_high = high_moti["人間関係"].mean()
-                insights.append(f"・**モチベーションが高い日（7以上）**は、人間関係の評価が平均 **{avg_rel_high:.1f}** となっています。")
-
-            # 直近1週間の自由時間相関
-            latest_date = df["日付"].max()
-            one_week_ago = latest_date - timedelta(days=7)
-            recent_df = df[df["日付"] >= one_week_ago].copy()
-
-            if len(recent_df) >= 3:
-                corr_move = recent_df["自由時間の量"].corr(recent_df["自覚的な体の動きやすさ"])
-                if not np.isnan(corr_move):
-                    move_text = "強い正の相関" if corr_move > 0.5 else ("正の相関" if corr_move > 0.2 else "相関が少ない" if corr_move > -0.2 else "負の相関")
-                    insights.append(f"・**直近1週間の自由時間と体の動きやすさ**には **[{move_text}]** (相関係数: {corr_move:.2f}) が見られます。")
-
-            for ins in insights:
-                st.write(ins)
-
-            st.divider()
-
-            # レーダーチャート比較
-            st.markdown("### 📊 好調時と不調時の条件比較")
-            if not high_move.empty and not low_move.empty:
-                categories = ['天気', '睡眠時間', '疲労度(逆算)', '不安度(逆算)', '前日負担(逆算)', '人間関係']
-                high_vals = [
-                    high_move["天気"].mean(),
-                    high_move["睡眠時間"].mean(),
-                    11 - high_move["体の自覚的疲労度"].mean(),
-                    11 - high_move["プレッシャー・不安度"].mean(),
-                    11 - high_move["前日の練習負担度"].mean(),
-                    high_move["人間関係"].mean()
-                ]
-                low_vals = [
-                    low_move["天気"].mean(),
-                    low_move["睡眠時間"].mean(),
-                    11 - low_move["体の自覚的疲労度"].mean(),
-                    11 - low_move["プレッシャー・不安度"].mean(),
-                    11 - low_move["前日の練習負担度"].mean(),
-                    low_move["人間関係"].mean()
-                ]
-
-                fig = go.Figure()
-                fig.add_trace(go.Scatterpolar(r=high_vals, theta=categories, fill='toself', name='動きやすい時 (7以上)'))
-                fig.add_trace(go.Scatterpolar(r=low_vals, theta=categories, fill='toself', name='体が重い時 (4以下)'))
-                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 10])), margin=dict(l=40, r=40, t=30, b=30), legend=dict(orientation="h", y=-0.2))
-                st.plotly_chart(fig, use_container_width=True)
+            if len(df) < 3:
+                st.info("※ 個人データが不足しています。まずは3日以上入力して送信してください。")
             else:
-                st.warning("好調時(7以上)と不調時(4以下)のデータが揃うとレーダーチャートが表示されます。")
+                high_move = df[df["自覚的な体の動きやすさ"] >= 7]
+                low_move = df[df["自覚的な体の動きやすさ"] <= 4]
+                high_moti = df[df["今日のモチベーション"] >= 7]
 
-            # 自由時間推移
-            st.markdown("### ⏳ 自由時間とコンディション推移")
-            fig_bar = px.bar(
-                df,
-                x="日付",
-                y=["自由時間の量", "自覚的な体の動きやすさ", "今日のモチベーション"],
-                barmode="group",
-                labels={"value": "スコア", "variable": "指標"}
-            )
-            fig_bar.update_layout(legend=dict(orientation="h", y=-0.3), margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(fig_bar, use_container_width=True)
+                st.markdown("### 💡 自動生成インサイト")
+                insights = []
+
+                if not high_move.empty:
+                    avg_sleep_high = high_move["睡眠時間"].mean()
+                    avg_prev_load_high = high_move["前日の練習負担度"].mean()
+                    insights.append(f"・**体が動きやすい日（7以上）**は、睡眠時間が平均 **{avg_sleep_high:.1f}時間**、前日の練習負担度が平均 **{avg_prev_load_high:.1f}** の傾向があります。")
+
+                if not high_moti.empty:
+                    avg_rel_high = high_moti["人間関係"].mean()
+                    insights.append(f"・**モチベーションが高い日（7以上）**は、人間関係の評価が平均 **{avg_rel_high:.1f}** となっています。")
+
+                # 直近1週間の自由時間相関
+                latest_date = df["日付"].max()
+                one_week_ago = latest_date - timedelta(days=7)
+                recent_df = df[df["日付"] >= one_week_ago].copy()
+
+                if len(recent_df) >= 3:
+                    corr_move = recent_df["自由時間の量"].corr(recent_df["自覚的な体の動きやすさ"])
+                    if not np.isnan(corr_move):
+                        move_text = "強い正の相関" if corr_move > 0.5 else ("正の相関" if corr_move > 0.2 else "相関が少ない" if corr_move > -0.2 else "負の相関")
+                        insights.append(f"・**直近1週間の自由時間と体の動きやすさ**には **[{move_text}]** (相関係数: {corr_move:.2f}) が見られます。")
+
+                for ins in insights:
+                    st.write(ins)
+
+                st.divider()
+
+                # レーダーチャート比較
+                st.markdown("### 📊 好調時と不調時の条件比較")
+                if not high_move.empty and not low_move.empty:
+                    categories = ['天気', '睡眠時間', '疲労度(逆算)', '不安度(逆算)', '前日負担(逆算)', '人間関係']
+                    high_vals = [
+                        high_move["天気"].mean(),
+                        high_move["睡眠時間"].mean(),
+                        11 - high_move["体の自覚的疲労度"].mean(),
+                        11 - high_move["プレッシャー・不安度"].mean(),
+                        11 - high_move["前日の練習負担度"].mean(),
+                        high_move["人間関係"].mean()
+                    ]
+                    low_vals = [
+                        low_move["天気"].mean(),
+                        low_move["睡眠時間"].mean(),
+                        11 - low_move["体の自覚的疲労度"].mean(),
+                        11 - low_move["プレッシャー・不安度"].mean(),
+                        11 - low_move["前日の練習負担度"].mean(),
+                        low_move["人間関係"].mean()
+                    ]
+
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatterpolar(r=high_vals, theta=categories, fill='toself', name='動きやすい時 (7以上)'))
+                    fig.add_trace(go.Scatterpolar(r=low_vals, theta=categories, fill='toself', name='体が重い時 (4以下)'))
+                    fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 10])), margin=dict(l=40, r=40, t=30, b=30), legend=dict(orientation="h", y=-0.2))
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("好調時(7以上)と不調時(4以下)のデータが揃うとレーダーチャートが表示されます。")
+
+                # 自由時間推移
+                st.markdown("### ⏳ 自由時間とコンディション推移")
+                fig_bar = px.bar(
+                    df,
+                    x="日付",
+                    y=["自由時間の量", "自覚的な体の動きやすさ", "今日のモチベーション"],
+                    barmode="group",
+                    labels={"value": "スコア", "variable": "指標"}
+                )
+                fig_bar.update_layout(legend=dict(orientation="h", y=-0.3), margin=dict(l=20, r=20, t=20, b=20))
+                st.plotly_chart(fig_bar, use_container_width=True)
